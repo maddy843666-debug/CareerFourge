@@ -168,6 +168,9 @@ export const api = {
     return fetchJSON<AITutorResponse>('/ai/tutor', {
       method: 'POST',
       body: JSON.stringify(payload),
+    }, {
+      reply: `For ${payload.role || 'your target role'}, focus on understanding the core architectural concepts, building hands-on portfolio projects, and following your step-by-step roadmap milestones.`,
+      suggested_actions: ["Study foundational concepts", "Build a small practice project", "Practice technical interview questions"]
     });
   },
 

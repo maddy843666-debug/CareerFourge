@@ -1064,16 +1064,23 @@ Provide a helpful, supportive 1-on-1 response (2-3 sentences max) spoken warmly:
 
     def start_or_continue_chat(self, req: InterviewChatRequest) -> InterviewChatResponse:
         now_time = datetime.now().strftime("%I:%M %p")
+        interview_id = req.interview_id or f"intv_{uuid.uuid4().hex[:8]}"
+        diff = req.difficulty or "Medium"
+        int_type = req.interview_type or "Technical"
+        num_q = req.num_questions or 5
 
-        # 1. Start new session if requested or missing
-        if req.action == "start" or not req.interview_id or req.interview_id not in self.sessions:
-            interview_id = f"intv_{uuid.uuid4().hex[:8]}"
-            diff = req.difficulty or "Medium"
-            int_type = req.interview_type or "Technical"
-            num_q = req.num_questions or 5
+        # 1. Retrieve or recover session
+        session = self.sessions.get(interview_id)
 
-            # If conversational mode or no specific role/course/custom domain requested, start with 1-on-1 HR welcome
-            if req.mode == "conversational" or (not req.target_role and not req.course and not req.custom_domain):
+        # 2. If explicit start or session not found in memory:
+        if req.action == "start" or not session:
+            # Determine if user has chosen or specified a domain
+            domain_choice = req.custom_domain or req.target_role or req.course
+            if not domain_choice and req.action == "chat" and req.message:
+                domain_choice = req.message.strip()
+
+            # If user wants conversational setup (or start action with no domain specified yet):
+            if req.action == "start" and (req.mode == "conversational" or not domain_choice):
                 greeting_msg = self._generate_greeting()
                 session = {
                     "interview_id": interview_id,
@@ -1112,13 +1119,13 @@ Provide a helpful, supportive 1-on-1 response (2-3 sentences max) spoken warmly:
                     current_question_num=0
                 )
 
-            # Direct launch mode if user already specified domain (recommended or custom extra domain)
-            raw_input = req.custom_domain or req.target_role or req.course or "Software Engineer"
-            domain_info = DomainDiscoveryEngine.discover(raw_input, self.provider, diff, num_q)
+            # Direct launch mode or recovering session with domain choice:
+            domain_input = domain_choice or "Software Engineer"
+            domain_info = DomainDiscoveryEngine.discover(domain_input, self.provider, diff, num_q)
             first_q = domain_info["questions"][0] if domain_info["questions"] else f"Walk me through your practical experience and core architecture in {domain_info['title']}."
             welcome_msg = (
-                f"Hello! Welcome to your live 1-on-1 interview. I am Priya Sharma, your Senior AI Interviewer.\n\n"
-                f"I'm delighted to interview you today for **{domain_info['title']}** focusing on **{', '.join(domain_info['skills'][:3])}** ({diff} Level).\n\n"
+                f"Wonderful choice! Preparing for **{domain_info['title']}** is a fantastic career move. "
+                f"I have calibrated our 1-on-1 session around **{', '.join(domain_info['skills'][:3])}** at a professional {diff} difficulty level.\n\n"
                 f"Whenever you're ready, let's begin with your first question:\n\n"
                 f"**Question 1 of {num_q}:**\n{first_q}"
             )
@@ -1163,8 +1170,6 @@ Provide a helpful, supportive 1-on-1 response (2-3 sentences max) spoken warmly:
                 total_questions=num_q,
                 current_question=first_q
             )
-
-        session = self.sessions[req.interview_id]
 
         # 2. Early finalize request
         if req.action == "finalize":
@@ -1999,18 +2004,65 @@ Generate ONLY the question. Do not repeat previous questions."""
                 )
         except Exception as e:
             logger.exception(f"Exception in _handle_interview_message: {e}")
+            role = session['config'].get('target_role', 'Software Engineer')
+            skills_list = session['config'].get('skills', ['Core Concepts'])
+            course = session['config'].get('course', role)
+            diff = session['config'].get('difficulty', 'Medium')
+            course_key = resolve_course_key(role, course, skills_list)
+
+            # Evaluate answer via local semantic validator
+            validation = self._evaluate_candidate_answer(current_q_text, user_msg, role, skills_list)
+            verdict = validation["verdict"]
+            verdict_exp = validation["verdict_explanation"]
+            feedback = validation["feedback"]
+            evaluation = {
+                "answer_quality": validation.get("answer_quality", 82.0 if verdict == "correct" else 30.0),
+                "technical_knowledge": validation.get("technical_knowledge", 80.0 if verdict == "correct" else 25.0),
+                "problem_solving": validation.get("problem_solving", 80.0 if verdict == "correct" else 20.0),
+                "communication": validation.get("communication", 85.0 if verdict == "correct" else 50.0),
+                "depth": validation.get("depth", 78.0 if verdict == "correct" else 20.0)
+            }
+            strengths = validation.get("strengths", ["Addressed core technical topic"])
+            weaknesses = validation.get("weaknesses", ["Can expand on high-concurrency production trade-offs"])
+
+            if current_q_num >= total_q:
+                return self.finalize_session(session)
+
+            next_q = get_next_unique_question(session, course_key, role, skills_list, diff)
+            session["current_question_num"] = current_q_num + 1
+            session["questions"].append(next_q)
+
+            verdict_tag = "✅ Correct!" if verdict == "correct" else ("⚠️ Partially Correct." if verdict == "partially_correct" else "❌ Incorrect.")
+            reply_msg = (
+                f"{verdict_tag} {verdict_exp}\n\n"
+                f"{feedback}\n\n"
+                f"Let's move on to our next question.\n\n"
+                f"**Question {session['current_question_num']} of {total_q}:**\n{next_q}"
+            )
+            session["conversation"].append({
+                "role": "assistant",
+                "content": reply_msg,
+                "timestamp": now_time
+            })
             return InterviewChatResponse(
                 interview_id=session["interview_id"],
                 stage="interview",
-                message="AI interviewer is temporarily unavailable. Please try again.",
+                message=reply_msg,
                 interview_type=session["config"].get("interview_type"),
                 target_role=session["config"].get("target_role"),
+                domain=session["config"].get("course"),
                 skills=session["config"].get("skills", []),
-                difficulty=session["config"].get("difficulty", "Medium"),
+                difficulty=diff,
                 num_questions=total_q,
-                current_question_num=current_q_num,
+                current_question_num=session["current_question_num"],
                 total_questions=total_q,
-                current_question=current_q_text
+                current_question=next_q,
+                verdict=verdict,
+                verdict_explanation=verdict_exp,
+                evaluation=evaluation,
+                feedback=feedback,
+                strengths=strengths,
+                weaknesses=weaknesses
             )
 
     def finalize_session(self, session: dict) -> InterviewChatResponse:
@@ -3953,54 +4005,34 @@ Response rules:
         except Exception as exc:
             # Context-aware local fallback keeps the agent useful even when Gemini
             # is unavailable, rate-limited, or the API key is missing.
-            text = self._local_tutor_answer(req)
+            from app.ai.tutor_knowledge import get_tutor_reply_and_actions
+            reply, actions = get_tutor_reply_and_actions(
+                message=req.message,
+                role=req.role,
+                current_skills=req.current_skills,
+                skill_gaps=req.skill_gaps,
+                roadmap_context=req.roadmap_context
+            )
             return AITutorResponse(
-                reply=text,
-                suggested_actions=self._local_tutor_actions(req.message)
+                reply=reply,
+                suggested_actions=actions
             )
 
     def _local_tutor_answer(self, req: AITutorRequest) -> str:
-        q = req.message.strip()
-        ql = q.lower()
-        role = req.role or "your target role"
-
-        topic_answers = {
-            "html": "HTML (HyperText Markup Language) is the structure of a web page. It defines elements such as headings, paragraphs, links, images, forms, buttons and sections. For a frontend career, learn semantic HTML first, then CSS and JavaScript. A good beginner project is a responsive portfolio page.",
-            "css": "CSS controls the appearance and layout of web pages: colors, spacing, typography, responsive design and animations. For frontend development, learn the box model, Flexbox, Grid, responsive media queries and reusable component styling. Practice by recreating a simple landing page.",
-            "javascript": "JavaScript adds behavior and interactivity to web pages. Focus on variables, functions, arrays/objects, DOM events, promises, async/await, modules and API calls. After the fundamentals, move to TypeScript and React if your roadmap targets frontend or full-stack development.",
-            "frontend": "Frontend development is the part of an application users see and interact with. The usual progression is HTML → CSS → JavaScript → TypeScript → React (or another framework) → API integration → testing. For your roadmap, build small projects at each stage rather than only watching tutorials.",
-            "backend": "Backend development handles server-side logic, APIs, authentication, databases and business rules. A practical path is HTTP/REST → one backend language/framework → SQL → authentication → testing → Docker → deployment. Build an API-backed project to connect these skills.",
-            "react": "React is a JavaScript library for building component-based user interfaces. Learn components, props, state, events, hooks, forms, routing and API integration. Start with a small task manager or course dashboard before moving to a larger application.",
-            "dsa": "DSA means Data Structures and Algorithms. For software-engineering interviews, start with arrays and strings, hash maps, stacks/queues, linked lists, trees, heaps, graphs, sorting, binary search and dynamic programming. Always practice explaining time and space complexity.",
-            "sql": "SQL is used to store, query and modify relational data. Learn SELECT, filtering, JOINs, GROUP BY, subqueries, indexes, transactions and window functions. A good project is a course or job-management database with realistic queries.",
-            "docker": "Docker packages an application and its dependencies into a container so it runs consistently across environments. Learn images, containers, Dockerfiles, volumes, networks and Docker Compose. Then containerize your CareerForge backend and database locally.",
-            "git": "Git tracks changes to your code and GitHub hosts repositories for collaboration. Learn clone, status, add, commit, branch, merge, pull, push and pull requests. Use feature branches and meaningful commits on your projects."
-        }
-
-        for keyword, answer in topic_answers.items():
-            if keyword in ql:
-                return answer + f" This is relevant to {role}."
-
-        if "what should i learn" in ql or "learn next" in ql or "start" in ql:
-            first = req.skill_gaps[0] if req.skill_gaps else "the first roadmap node"
-            return f"For {role}, start with {first}. Learn the core concepts, complete one small hands-on exercise, then build a mini-project before moving to the next roadmap node. Your current roadmap is: {req.roadmap_context or 'not loaded yet'}."
-
-        if "why" in ql and req.roadmap_context:
-            return f"That topic appears in your {role} roadmap because it is part of the dependency chain toward the target role. Your current sequence is {req.roadmap_context}. If you tell me the exact node you mean, I can explain why it is required and what you can safely skip."
-
-        return f"For your question, I would focus on the part that directly supports {role}. Your current skills are {', '.join(req.current_skills) or 'not listed'}, and your main gaps are {', '.join(req.skill_gaps) or 'not listed'}. Ask me about a specific roadmap topic, such as HTML, frontend, JavaScript, React, DSA, SQL, Docker or Git, and I will explain it with an example."
+        from app.ai.tutor_knowledge import get_tutor_reply_and_actions
+        reply, _ = get_tutor_reply_and_actions(
+            message=req.message,
+            role=req.role,
+            current_skills=req.current_skills,
+            skill_gaps=req.skill_gaps,
+            roadmap_context=req.roadmap_context
+        )
+        return reply
 
     def _local_tutor_actions(self, message: str) -> List[str]:
-        q = message.lower()
-        if "html" in q:
-            return ["Learn semantic HTML", "Build a simple portfolio page", "Practice forms and accessibility"]
-        if "frontend" in q:
-            return ["Learn HTML and CSS", "Practice JavaScript DOM events", "Build a responsive page"]
-        if "backend" in q:
-            return ["Learn HTTP and REST", "Build a small API", "Connect it to SQL"]
-        if "dsa" in q:
-            return ["Practice arrays and hash maps", "Learn Big-O", "Solve 3 problems daily"]
-        return ["Study the concept", "Build a small practice project", "Complete a checkpoint"]
+        from app.ai.tutor_knowledge import get_tutor_reply_and_actions
+        _, actions = get_tutor_reply_and_actions(message=message)
+        return actions
 
     def _fallback(self, req: RoleRoadmapRequest) -> RoleRoadmapResponse:
         """Deterministic role-specific fallback. Never show Full Stack content for another role."""

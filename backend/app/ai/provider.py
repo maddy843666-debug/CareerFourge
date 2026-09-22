@@ -42,18 +42,18 @@ class GeminiProvider(BaseAIProvider):
 
     def _call_api(self, payload: dict) -> Optional[dict]:
         import requests
-        # Prioritize active models with highest availability and official endpoints
+        # Prioritize active 2026 models with highest availability
         models = [
-            "gemini-2.0-flash",
-            "gemini-1.5-flash",
-            "gemini-1.5-pro",
-            "gemini-2.5-flash",
-            "gemini-flash-latest"
+            "gemini-3.6-flash",
+            "gemini-3-flash-preview",
+            "gemini-3.7-flash",
+            "gemini-3.8-flash",
+            "gemini-3.1-flash-lite"
         ]
         for model in models:
             try:
                 url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={self.api_key}"
-                resp = requests.post(url, json=payload, timeout=4)
+                resp = requests.post(url, json=payload, timeout=12)
                 if resp.status_code == 200:
                     return resp.json()
                 elif resp.status_code == 400 and "generationConfig" in payload and "responseSchema" in payload.get("generationConfig", {}):
@@ -61,18 +61,28 @@ class GeminiProvider(BaseAIProvider):
                     logger.info(f"Gemini {model} rejected responseSchema, retrying without strict schema...")
                     fallback_payload = dict(payload)
                     fallback_payload["generationConfig"] = {"responseMimeType": "application/json"}
-                    retry_resp = requests.post(url, json=fallback_payload, timeout=4)
+                    retry_resp = requests.post(url, json=fallback_payload, timeout=5)
                     if retry_resp.status_code == 200:
                         return retry_resp.json()
-                    logger.warning(f"Gemini model {model} returned status {resp.status_code}: {resp.text[:150]}")
-                    if resp.status_code == 429:
-                        logger.warning("Gemini API quota exhausted (429). Fast failing to intelligent course engine.")
-                        break
+                elif resp.status_code in (429, 503):
+                    # High demand / temporary rate limit on this model, try next active model
+                    logger.info(f"Gemini {model} returned {resp.status_code}, trying next active model...")
+                    continue
+                elif resp.status_code == 404:
+                    # Deprecated / unavailable model, try next
+                    continue
+                elif resp.status_code in (401, 403):
+                    logger.warning(f"Gemini API authentication error ({resp.status_code}). Fast failing to local AI provider.")
+                    break
             except requests.exceptions.ConnectionError as e:
-                logger.warning(f"Connection/DNS failed for Gemini ({e}). Fast failing to intelligent fallback provider.")
+                logger.warning(f"Connection error calling Gemini ({e}). Fast failing.")
                 break
+            except (requests.exceptions.Timeout, requests.exceptions.RequestException, OSError) as e:
+                logger.warning(f"Socket or network error calling Gemini {model} ({e}). Trying next model...")
+                continue
             except Exception as e:
-                logger.warning(f"Gemini call to {model} failed: {e}")
+                logger.warning(f"Gemini call to {model} failed ({e}). Trying next model...")
+                continue
         return None
 
     def generate_json(self, prompt: str, schema_class: Optional[Any] = None) -> Dict[str, Any]:
@@ -365,6 +375,41 @@ class MockAIProvider(BaseAIProvider):
                 "next_question_topic": core_topic,
                 "next_difficulty": "Medium",
                 "final_report": None
+            }
+
+        if (schema_class and getattr(schema_class, '__name__', '') == 'AITutorResponse') or "career mentor" in prompt_lower or "exact question" in prompt_lower or "suggested_actions" in prompt_lower:
+            from app.ai.tutor_knowledge import get_tutor_reply_and_actions
+            user_msg = ""
+            if "exact question:" in prompt_lower:
+                try:
+                    user_msg = prompt.split("exact question:")[1].split("Response rules:")[0].strip()
+                except Exception:
+                    user_msg = ""
+            elif "user's exact question" in prompt_lower:
+                try:
+                    user_msg = prompt.split("User's exact question")[1].split("\n\n")[0].strip(':\n ')
+                except Exception:
+                    user_msg = ""
+            elif "message:" in prompt_lower:
+                try:
+                    user_msg = prompt.split("message:")[1].split("\n")[0].strip()
+                except Exception:
+                    user_msg = ""
+
+            role = "Software Engineer"
+            if "target career role:" in prompt_lower:
+                try:
+                    role = prompt.split("Target career role:")[1].split("\n")[0].strip()
+                except Exception:
+                    role = "Software Engineer"
+
+            reply, actions = get_tutor_reply_and_actions(
+                message=user_msg,
+                role=role
+            )
+            return {
+                "reply": reply,
+                "suggested_actions": actions
             }
 
         # Default fallback

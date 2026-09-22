@@ -390,7 +390,7 @@ export const ChatInterview: React.FC<ChatInterviewProps> = ({
     setTargetRole(track.role);
     setShowTrackModal(false);
     if (stage === 'setup') {
-      handleSendAnswer(track.title);
+      handleSendAnswer(track.title, { custom_domain: track.title });
     } else {
       startNewSession(track);
     }
@@ -600,7 +600,8 @@ export const ChatInterview: React.FC<ChatInterviewProps> = ({
                           onChange={(e) => setCustomDomainText(e.target.value)}
                           onKeyDown={(e) => {
                             if (e.key === 'Enter' && customDomainText.trim() && !isAiThinking) {
-                              handleSendAnswer(customDomainText.trim());
+                              const dom = customDomainText.trim();
+                              handleSendAnswer(dom, { custom_domain: dom });
                               setCustomDomainText('');
                             }
                           }}
@@ -611,7 +612,8 @@ export const ChatInterview: React.FC<ChatInterviewProps> = ({
                           type="button"
                           onClick={() => {
                             if (customDomainText.trim() && !isAiThinking) {
-                              handleSendAnswer(customDomainText.trim());
+                              const dom = customDomainText.trim();
+                              handleSendAnswer(dom, { custom_domain: dom });
                               setCustomDomainText('');
                             }
                           }}
@@ -634,7 +636,7 @@ export const ChatInterview: React.FC<ChatInterviewProps> = ({
                             type="button"
                             onClick={() => {
                               setSelectedTrack(t);
-                              handleSendAnswer(t.title);
+                              handleSendAnswer(t.title, { custom_domain: t.title });
                             }}
                             disabled={isAiThinking}
                             className="text-left p-2.5 rounded-xl border border-sky-200 bg-white hover:bg-sky-100/70 hover:border-sky-400 transition-all shadow-2xs group"
