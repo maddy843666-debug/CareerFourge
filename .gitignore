@@ -1,0 +1,33 @@
+# Node / Frontend
+node_modules/
+dist/
+dist-ssr/
+*.local
+
+# Python / Backend
+backend/venv/
+backend/__pycache__/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+*.db
+*.sqlite
+*.sqlite3
+
+# Logs & System
+*.log
+.DS_Store
+.vscode/
+.idea/
+
+# Environment & Secrets
+.env
+*.env
+backend/.env
+!.env.example
+!backend/.env.example
+test-results/
+backend/test-results/
+
