@@ -5,7 +5,7 @@ from datetime import datetime
 # --- Auth & Onboarding Schemas ---
 class LoginRequest(BaseModel):
     email: str
-    password: str
+    password: Optional[str] = "demopassword"
 
 class RegisterRequest(BaseModel):
     full_name: str
@@ -105,11 +105,19 @@ class JobGapSimulatorResponse(BaseModel):
     high_priority_gaps: List[SkillGapItem]
     summary_message: str
 
-# --- Conversational AI Chat Interview Schemas ---
 class InterviewChatRequest(BaseModel):
     interview_id: Optional[str] = None
     message: Optional[str] = None
     action: Optional[str] = "chat" # "start" | "chat" | "finalize"
+    target_role: Optional[str] = None
+    course: Optional[str] = None
+    custom_domain: Optional[str] = None
+    skills: Optional[List[str]] = None
+    difficulty: Optional[str] = "Medium"
+    interview_type: Optional[str] = "Technical"
+    num_questions: Optional[int] = 5
+    mode: Optional[str] = None # "conversational" | "direct"
+    is_hint: Optional[bool] = False
 
 class InterviewChatResponse(BaseModel):
     interview_id: str
@@ -117,6 +125,7 @@ class InterviewChatResponse(BaseModel):
     message: str
     interview_type: Optional[str] = None
     target_role: Optional[str] = None
+    domain: Optional[str] = None
     skills: List[str] = []
     difficulty: Optional[str] = "Medium"
     num_questions: int = 5
@@ -130,6 +139,7 @@ class InterviewChatResponse(BaseModel):
     strengths: List[str] = []
     weaknesses: List[str] = []
     final_report: Optional[Dict[str, Any]] = None
+    is_clarification: Optional[bool] = False
 
 # --- Interview Module Schemas ---
 class InterviewSetupRequest(BaseModel):
@@ -258,6 +268,18 @@ class InterviewWhatIfResponse(BaseModel):
 class CodingSubmitRequest(BaseModel):
     code: str
     language: str = "python"
+    problem_id: Optional[str] = "rotated-array"
+
+class AIHintRequest(BaseModel):
+    problem_id: str
+    code: str
+    language: str = "python"
+
+class AIHintResponse(BaseModel):
+    hint: str
+    time_complexity_target: str
+    space_complexity_target: str
+    algorithmic_pattern: str
 
 class CodingEvaluationResponse(BaseModel):
     correctness_score: float
@@ -268,8 +290,10 @@ class CodingEvaluationResponse(BaseModel):
     feedback: str
     code_quality_rating: str
 
+
 class SQLSubmitRequest(BaseModel):
     query: str
+    problem_id: Optional[str] = None
 
 class SQLEvaluationResponse(BaseModel):
     correctness_score: float
@@ -277,6 +301,7 @@ class SQLEvaluationResponse(BaseModel):
     result_rows: List[Dict[str, Any]]
     execution_time_ms: float
     feedback: str
+    optimization_tips: Optional[List[str]] = None
 
 # --- Project Deep Dive Schemas ---
 class ProjectQuestionRequest(BaseModel):

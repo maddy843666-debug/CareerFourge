@@ -122,6 +122,15 @@ export interface InterviewChatRequest {
   interview_id?: string;
   message?: string;
   action?: 'start' | 'chat' | 'finalize';
+  target_role?: string;
+  course?: string;
+  custom_domain?: string;
+  skills?: string[];
+  difficulty?: string;
+  interview_type?: string;
+  num_questions?: number;
+  mode?: 'conversational' | 'direct';
+  is_hint?: boolean;
 }
 
 export interface InterviewChatResponse {
@@ -130,12 +139,14 @@ export interface InterviewChatResponse {
   message: string;
   interview_type?: string;
   target_role?: string;
-  skills: string[];
+  domain?: string;
+  skills?: string[];
   difficulty?: string;
-  num_questions: number;
-  current_question_num: number;
-  total_questions: number;
+  num_questions?: number;
+  current_question_num?: number;
+  total_questions?: number;
   current_question?: string;
+  is_clarification?: boolean;
   evaluation?: {
     answer_quality?: number;
     technical_knowledge?: number;
@@ -146,8 +157,8 @@ export interface InterviewChatResponse {
   feedback?: string;
   verdict?: 'correct' | 'partially_correct' | 'incorrect';
   verdict_explanation?: string;
-  strengths: string[];
-  weaknesses: string[];
+  strengths?: string[];
+  weaknesses?: string[];
   final_report?: {
     overall_score: number;
     technical_knowledge: number;
@@ -200,12 +211,20 @@ export interface CodingEvaluation {
   code_quality_rating: string;
 }
 
+export interface AIHintResponse {
+  hint: string;
+  time_complexity_target: string;
+  space_complexity_target: string;
+  algorithmic_pattern: string;
+}
+
 export interface SQLEvaluation {
   correctness_score: number;
   is_valid_syntax: boolean;
   result_rows: Record<string, any>[];
   execution_time_ms: number;
   feedback: string;
+  optimization_tips?: string[];
 }
 
 export interface ReadinessScore {

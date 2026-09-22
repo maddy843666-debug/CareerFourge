@@ -58,6 +58,10 @@ export function App() {
       return;
     }
 
+    if ('speechSynthesis' in window) {
+      window.speechSynthesis.cancel();
+    }
+
     setCurrentTab(tab);
   };
 

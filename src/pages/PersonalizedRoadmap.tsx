@@ -78,23 +78,38 @@ export const PersonalizedRoadmapPage: React.FC<PersonalizedRoadmapProps> = ({ on
     localStorage.setItem(progressKey(selectedRole), JSON.stringify(completed));
   }, [selectedRole, completed]);
 
+  const roadmapCacheRef = React.useRef<Record<string, RoleRoadmap>>({});
+
   const generate = async (role = selectedRole) => {
     const normalized = roleAliases[role] || role;
     setSelectedRole(normalized);
     setActiveTrack('All');
     setSelectedNode(null);
-    setLoading(true);
+
+    // Instant optimistic render from cache
+    if (roadmapCacheRef.current[normalized]) {
+      setRoadmap(roadmapCacheRef.current[normalized]);
+      return;
+    }
+
+    // Immediately render local fallback with 0ms delay so UI never hangs
+    const instantFallback = makeFallback(normalized);
+    setRoadmap(instantFallback);
+
     try {
       const result = await api.generateRoleRoadmap({
         target_role: normalized, current_skills: skillList, skill_gaps: gaps,
         experience_level: store.goal.experienceLevel, target_company: store.goal.targetCompany,
         job_description: store.goal.jobDescription
       });
-      const safe = result?.nodes?.length ? result : makeFallback(normalized);
-      setRoadmap({ ...safe, role: normalized });
+      const safe = result?.nodes?.length ? result : instantFallback;
+      const finalRoadmap = { ...safe, role: normalized };
+      roadmapCacheRef.current[normalized] = finalRoadmap;
+      setRoadmap(finalRoadmap);
     } catch {
-      setRoadmap(makeFallback(normalized));
-    } finally { setLoading(false); }
+      roadmapCacheRef.current[normalized] = instantFallback;
+      setRoadmap(instantFallback);
+    }
   };
 
   useEffect(() => { generate(initialRole); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, []);

@@ -6,6 +6,7 @@ import {
   Question,
   AnswerEvaluation,
   CodingEvaluation,
+  AIHintResponse,
   SQLEvaluation,
   ReadinessScore,
   PersonalizedRoadmap,
@@ -34,7 +35,112 @@ async function fetchJSON<T>(endpoint: string, options?: RequestInit, fallbackDat
     console.warn(`[CareerFourge AI API] Network call to ${endpoint} failed, utilizing demo fallback mode`, err);
   }
   if (fallbackData !== undefined) return fallbackData;
-  throw new Error(`Failed to load data for ${endpoint}`);
+  throw new Error(`API call to ${endpoint} failed and no fallback was provided.`);
+}
+
+function createMockChatInterviewResponse(payload: InterviewChatRequest): InterviewChatResponse {
+  // 1. Start action
+  if (payload.action === 'start') {
+    if (payload.mode === 'conversational' && !payload.course && !payload.custom_domain && !payload.target_role) {
+      return {
+        interview_id: `intv_${Date.now()}`,
+        stage: 'setup',
+        message: "Hello and welcome! I'm Priya Sharma, your Senior AI Technical & HR Interviewer today. It's a pleasure to connect with you for this 1-on-1 interview session!\n\nWe can interview in any domain or technology you'd like. You can:\n• **Pick one of our recommended tracks** below, OR\n• **Text me any extra or custom domain** (e.g. *Embedded Systems*, *Rust*, *Computer Vision*, *Robotics*, *Cybersecurity*, *Game Development*, *Salesforce*, etc.), and I will find it and ask tailored 1-on-1 questions for you.\n\nWhich domain or tech stack would you like to interview for today?",
+        interview_type: 'Technical',
+        num_questions: payload.num_questions || 5,
+        total_questions: payload.num_questions || 5,
+        current_question_num: 0,
+        is_clarification: false
+      };
+    }
+    const domainTitle = payload.custom_domain || payload.course || 'Full-Stack Engineering';
+    const roleTitle = payload.target_role || `${domainTitle} Engineer`;
+    const firstQ = `In an advanced production ${domainTitle} architecture, walk me through how you design high-availability systems, handle fault tolerance, and optimize memory/throughput bottlenecks.`;
+    return {
+      interview_id: payload.interview_id || `intv_${Date.now()}`,
+      stage: 'interview',
+      target_role: roleTitle,
+      domain: domainTitle,
+      skills: payload.skills || [domainTitle, 'Architecture', 'Performance Tuning'],
+      difficulty: payload.difficulty || 'Medium',
+      num_questions: payload.num_questions || 5,
+      total_questions: payload.num_questions || 5,
+      current_question_num: 1,
+      current_question: firstQ,
+      message: `Wonderful choice! Preparing for **${domainTitle}** is a fantastic career move. I have calibrated our 1-on-1 session around key technical competencies at a professional ${payload.difficulty || 'Medium'} difficulty level.\n\nWhenever you're ready, let's begin with your first question:\n\n**Question 1 of ${payload.num_questions || 5}:**\n${firstQ}`,
+      is_clarification: false
+    };
+  }
+
+  // 2. Finalize action
+  if (payload.action === 'finalize') {
+    return {
+      interview_id: payload.interview_id || `intv_${Date.now()}`,
+      stage: 'completed',
+      message: "Excellent job completing your technical interview session! I have synthesized your overall performance, accuracy, and engineering depth into your detailed assessment scorecard.",
+      final_report: {
+        overall_score: 84,
+        technical_knowledge: 86,
+        problem_solving: 82,
+        communication: 85,
+        answer_quality: 84,
+        depth: 80,
+        strengths: ["Clear technical reasoning", "Structured explanation of architecture"],
+        weaknesses: ["Can provide more specific numerical benchmark trade-offs"],
+        recommendations: ["Review distributed caching invalidation strategies", "Practice STAR method for edge-case incident reviews"],
+        final_feedback: "Strong candidate performance with good foundational knowledge and clear communication."
+      },
+      is_clarification: false
+    };
+  }
+
+  // 3. Hint or Clarification
+  if (payload.is_hint || (payload.message && /\b(hint|clue|clarify|what do you mean)\b/i.test(payload.message))) {
+    return {
+      interview_id: payload.interview_id || `intv_${Date.now()}`,
+      stage: 'interview',
+      message: "💡 **Interviewer Pointer:** Focus on the underlying architectural trade-offs, state transitions, and memory/concurrency constraints. Walk me step-by-step through how the system behaves under edge cases.",
+      is_clarification: true
+    };
+  }
+
+  // 4. Default Chat Answer / Domain Selection
+  const msg = payload.message || '';
+  const isLikelyDomainChoice = msg.length < 50 && (
+    /\b(domain|stack|engineer|developer|react|python|java|rust|embedded|vision|robotics|salesforce|data|cloud|go|android|ios)\b/i.test(msg) ||
+    !msg.includes('.')
+  );
+
+  if (isLikelyDomainChoice) {
+    const domainTitle = msg.replace(/^(i choose|my domain is|i want|domain:|track:)\s*/i, '').trim() || 'Software Engineering';
+    const firstQ = `In a production ${domainTitle} environment, how do you diagnose edge-case performance bottlenecks and design fault-tolerant error recovery mechanisms?`;
+    return {
+      interview_id: payload.interview_id || `intv_${Date.now()}`,
+      stage: 'interview',
+      target_role: `${domainTitle} Specialist`,
+      domain: domainTitle,
+      skills: [domainTitle, 'Core Systems', 'Performance Tuning'],
+      difficulty: 'Medium',
+      total_questions: 5,
+      current_question_num: 1,
+      current_question: firstQ,
+      message: `Great! Let's focus our 1-on-1 session on **${domainTitle}**.\n\n**Question 1 of 5:**\n${firstQ}`,
+      is_clarification: false
+    };
+  }
+
+  return {
+    interview_id: payload.interview_id || `intv_${Date.now()}`,
+    stage: 'interview',
+    verdict: 'correct',
+    verdict_explanation: "Correct answer! You covered the core architectural mechanisms and technical trade-offs accurately.",
+    feedback: "Strong explanation demonstrating technical clarity and practical problem-solving logic.",
+    current_question_num: 2,
+    total_questions: 5,
+    current_question: "How would you handle horizontal scaling, caching strategies, and data consistency under high concurrent load in this architecture?",
+    message: "Correct answer! You covered the core architectural mechanisms and technical trade-offs accurately.\n\n**Question 2 of 5:**\nHow would you handle horizontal scaling, caching strategies, and data consistency under high concurrent load in this architecture?",
+    is_clarification: false
+  };
 }
 
 export const api = {
@@ -248,10 +354,15 @@ export const api = {
 
   // Conversational AI Chat Interview Engine (Gemini-Powered)
   chatInterview: async (payload: InterviewChatRequest): Promise<InterviewChatResponse> => {
-    return fetchJSON<InterviewChatResponse>('/interview/chat', {
-      method: 'POST',
-      body: JSON.stringify(payload),
-    });
+    try {
+      return await fetchJSON<InterviewChatResponse>('/interview/chat', {
+        method: 'POST',
+        body: JSON.stringify(payload),
+      });
+    } catch (err) {
+      console.warn('[CareerFourge AI API] Live backend unavailable, using client-side 1-on-1 interview fallback', err);
+      return createMockChatInterviewResponse(payload);
+    }
   },
 
   // Interview Engine (Configured & Adaptive)
@@ -405,26 +516,38 @@ export const api = {
   },
 
   // Coding Workspace
-  submitCode: async (code: string): Promise<CodingEvaluation> => {
+  submitCode: async (code: string, problemId: string = 'rotated-array', language: string = 'python'): Promise<CodingEvaluation> => {
     return fetchJSON<CodingEvaluation>('/coding/submit', {
       method: 'POST',
-      body: JSON.stringify({ code, language: 'python' }),
+      body: JSON.stringify({ code, language, problem_id: problemId }),
     }, {
       correctness_score: 1.0,
       passed_tests: 5,
       total_tests: 5,
       time_complexity: "O(log N)",
       space_complexity: "O(1)",
-      feedback: "Correct binary search implementation! Efficient O(log N) runtime with proper pivot calculation.",
-      code_quality_rating: "Clean Pythonic Code"
+      feedback: "Correct algorithmic solution! Optimal time and space complexity with clean structure.",
+      code_quality_rating: "Clean Production-Ready Code"
+    });
+  },
+
+  getAIHint: async (problemId: string, code: string, language: string = 'python'): Promise<AIHintResponse> => {
+    return fetchJSON<AIHintResponse>('/coding/hint', {
+      method: 'POST',
+      body: JSON.stringify({ problem_id: problemId, code, language }),
+    }, {
+      hint: "Consider breaking down the problem into subproblems or using an auxiliary data structure to optimize lookup time.",
+      time_complexity_target: "O(N) or O(log N)",
+      space_complexity_target: "O(1) or O(N)",
+      algorithmic_pattern: "Pattern-Driven Problem Solving"
     });
   },
 
   // SQL Workspace
-  submitSQL: async (query: string): Promise<SQLEvaluation> => {
+  submitSQL: async (query: string, problemId?: string): Promise<SQLEvaluation> => {
     return fetchJSON<SQLEvaluation>('/sql/submit', {
       method: 'POST',
-      body: JSON.stringify({ query }),
+      body: JSON.stringify({ query, problem_id: problemId }),
     }, {
       correctness_score: 1.0,
       is_valid_syntax: true,
@@ -434,7 +557,11 @@ export const api = {
         { customer_id: 103, customer_name: "Wayne Enterprises", total_spent: 9800.00 }
       ],
       execution_time_ms: 1.42,
-      feedback: "Excellent query using INNER JOIN and GROUP BY with aggregate SUM(). Index utilized."
+      feedback: "Excellent query using INNER JOIN and GROUP BY with aggregate SUM(). Index utilized.",
+      optimization_tips: [
+        "Include indexed filter on orders(customer_id, status, total_amount).",
+        "Group by primary key rather than string names to optimize hash table size."
+      ]
     });
   },
 

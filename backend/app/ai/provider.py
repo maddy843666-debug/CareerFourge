@@ -12,28 +12,65 @@ class BaseAIProvider:
     def generate_text(self, prompt: str) -> str:
         raise NotImplementedError
 
+def _clean_schema_for_gemini(raw_schema: dict) -> dict:
+    """Removes $defs and inlines references so Gemini API does not reject with 400."""
+    if not isinstance(raw_schema, dict):
+        return raw_schema
+    defs = raw_schema.get("$defs", {}) or raw_schema.get("definitions", {})
+
+    def resolve(node):
+        if isinstance(node, dict):
+            if "$ref" in node:
+                ref_name = node["$ref"].split("/")[-1]
+                if ref_name in defs:
+                    return resolve(defs[ref_name].copy())
+            cleaned = {}
+            for k, v in node.items():
+                if k in ("$defs", "definitions", "title", "$schema"):
+                    continue
+                cleaned[k] = resolve(v)
+            return cleaned
+        elif isinstance(node, list):
+            return [resolve(item) for item in node]
+        return node
+
+    return resolve(raw_schema)
+
 class GeminiProvider(BaseAIProvider):
     def __init__(self, api_key: str):
         self.api_key = api_key
 
     def _call_api(self, payload: dict) -> Optional[dict]:
         import requests
-        # Prioritize active models with highest availability and quota
+        # Prioritize active models with highest availability and official endpoints
         models = [
-            "gemini-flash-lite-latest",
-            "gemini-3.7-flash",
-            "gemini-3.5-flash",
-            "gemini-flash-latest",
-            "gemini-3.6-flash"
+            "gemini-2.0-flash",
+            "gemini-1.5-flash",
+            "gemini-1.5-pro",
+            "gemini-2.5-flash",
+            "gemini-flash-latest"
         ]
         for model in models:
             try:
                 url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={self.api_key}"
-                resp = requests.post(url, json=payload, timeout=20)
+                resp = requests.post(url, json=payload, timeout=4)
                 if resp.status_code == 200:
                     return resp.json()
-                else:
+                elif resp.status_code == 400 and "generationConfig" in payload and "responseSchema" in payload.get("generationConfig", {}):
+                    # Schema rejection fallback: retry without responseSchema
+                    logger.info(f"Gemini {model} rejected responseSchema, retrying without strict schema...")
+                    fallback_payload = dict(payload)
+                    fallback_payload["generationConfig"] = {"responseMimeType": "application/json"}
+                    retry_resp = requests.post(url, json=fallback_payload, timeout=4)
+                    if retry_resp.status_code == 200:
+                        return retry_resp.json()
                     logger.warning(f"Gemini model {model} returned status {resp.status_code}: {resp.text[:150]}")
+                    if resp.status_code == 429:
+                        logger.warning("Gemini API quota exhausted (429). Fast failing to intelligent course engine.")
+                        break
+            except requests.exceptions.ConnectionError as e:
+                logger.warning(f"Connection/DNS failed for Gemini ({e}). Fast failing to intelligent fallback provider.")
+                break
             except Exception as e:
                 logger.warning(f"Gemini call to {model} failed: {e}")
         return None
@@ -42,7 +79,10 @@ class GeminiProvider(BaseAIProvider):
         try:
             generation_config = {"responseMimeType": "application/json"}
             if schema_class is not None and hasattr(schema_class, "model_json_schema"):
-                generation_config["responseSchema"] = schema_class.model_json_schema()
+                try:
+                    generation_config["responseSchema"] = _clean_schema_for_gemini(schema_class.model_json_schema())
+                except Exception:
+                    pass
             payload = {
                 "contents": [{"parts": [{"text": prompt + "\n\nReturn valid JSON only."}]}],
                 "generationConfig": generation_config
@@ -225,20 +265,104 @@ class MockAIProvider(BaseAIProvider):
             }
 
         if "candidate's answer" in prompt_lower or ("evaluation" in prompt_lower and "strengths" in prompt_lower):
+            # Extract candidate answer
+            cand_ans = ""
+            if "candidate's answer:" in prompt_lower:
+                cand_ans = prompt_lower.split("candidate's answer:")[1].split("\n\n")[0].strip('"\n ')
+            elif "candidate's answer" in prompt_lower:
+                cand_ans = prompt_lower.split("candidate's answer")[1].split("\n\n")[0].strip('":\n ')
+
+            # Extract current question
+            curr_q = ""
+            if "current question" in prompt_lower:
+                curr_q = prompt_lower.split("current question")[1].split("\n\n")[0].strip('":\n ')
+
+            ans_clean = cand_ans.lower()
+            q_clean = curr_q.lower()
+            word_count = len(ans_clean.split())
+
+            # Evasive check
+            evasive_exact = ["i don't know", "i do not know", "no idea", "not sure", "don't know", "dont know", "no clue", "dunno", "can't remember", "skip", "pass", "no answer"]
+            is_evasive = any(p in ans_clean for p in evasive_exact) or (word_count <= 3 and any(w in ans_clean.split() for w in ["no", "idk", "nope", "skip", "pass"]))
+
+            # Nonsense / contradiction check
+            nonsense_words = ["screen", "monitor", "hardware", "led", "display", "wallpaper", "video game", "samsung", "tv", "snake", "pizza", "food", "cook", "clothes", "shoes", "animal", "actor", "movie"]
+            has_nonsense = any(nw in ans_clean for nw in nonsense_words)
+
+            # Determine technical validity based on question topic
+            is_valid_tech = False
+            core_topic = "the requested technical domain"
+            correct_summary = "Demonstrated solid technical understanding."
+            incorrect_summary = "That answer is factually incorrect and does not address the core technical mechanics."
+
+            if "virtual dom" in q_clean or "reconciliation" in q_clean:
+                core_topic = "Virtual DOM & Reconciliation"
+                is_valid_tech = any(k in ans_clean for k in ["diff", "reconcil", "tree", "in-memory", "render", "state", "prop", "patch", "fiber", "batch", "real dom", "javascript object"]) and not has_nonsense
+                incorrect_summary = "The Virtual DOM is an in-memory JavaScript representation of the real DOM tree used for diffing and minimal batch updates, not physical display hardware."
+            elif "gil" in q_clean or "interpreter lock" in q_clean:
+                core_topic = "Python GIL & Concurrency"
+                is_valid_tech = any(k in ans_clean for k in ["mutex", "lock", "thread", "cpu", "i/o", "concurrency", "cpython", "bytecode", "multiprocess", "asyncio"]) and not has_nonsense
+                incorrect_summary = "The GIL (Global Interpreter Lock) is a CPython mutex that restricts bytecode execution to one native thread at a time."
+            elif "csr" in q_clean or "ssr" in q_clean or "ssg" in q_clean:
+                core_topic = "Rendering Strategies"
+                is_valid_tech = any(k in ans_clean for k in ["server", "client", "build", "html", "pre-render", "request", "hydration", "seo", "runtime"]) and not has_nonsense
+                incorrect_summary = "SSR generates HTML on each request, SSG pre-renders at build time, and CSR renders in the browser runtime."
+            elif "hash table" in q_clean or "collision" in q_clean:
+                core_topic = "Hash Tables & Collisions"
+                is_valid_tech = any(k in ans_clean for k in ["chaining", "open addressing", "bucket", "probe", "linked list", "hash", "collision"]) and not has_nonsense
+                incorrect_summary = "Hash collisions are resolved via Separate Chaining (linked lists/trees per bucket) or Open Addressing (linear/quadratic probing)."
+            elif "connection pool" in q_clean:
+                core_topic = "Database Connection Pooling"
+                is_valid_tech = any(k in ans_clean for k in ["connection", "pool", "reuse", "starvation", "timeout", "max", "database", "sqlalchemy", "asyncpg"]) and not has_nonsense
+                incorrect_summary = "Connection pooling maintains open database connections to avoid TCP handshake overhead and prevents pool starvation."
+            elif "docker" in q_clean or "container" in q_clean or "virtual machine" in q_clean:
+                core_topic = "Containers vs Virtual Machines"
+                is_valid_tech = any(k in ans_clean for k in ["kernel", "hypervisor", "namespace", "cgroup", "guest", "host", "os", "isolat", "image"]) and not has_nonsense
+                incorrect_summary = "Docker shares the host OS kernel using namespaces and cgroups, while VMs run full guest operating systems on a hypervisor."
+            else:
+                # Generic question evaluation: requires substantial length, topic keyword, and no nonsense
+                q_words = [w for w in q_clean.split() if len(w) > 4 and w not in ["explain", "describe", "would", "which", "what", "where", "about"]]
+                matched_q_words = [w for w in q_words if w in ans_clean]
+                is_valid_tech = len(matched_q_words) >= 2 and word_count >= 15 and not has_nonsense
+
+            if is_evasive or has_nonsense or not is_valid_tech:
+                return {
+                    "stage": "interview",
+                    "verdict": "incorrect",
+                    "verdict_explanation": f"That answer is incorrect. {incorrect_summary}",
+                    "evaluation": {
+                        "answer_quality": 25.0,
+                        "technical_knowledge": 22.0,
+                        "problem_solving": 20.0,
+                        "communication": 45.0,
+                        "depth": 15.0
+                    },
+                    "feedback": f"Incorrect answer for {core_topic}. {incorrect_summary}",
+                    "strengths": ["Response recorded"],
+                    "weaknesses": [f"Fundamental factual misconception regarding {core_topic}", "Need to review core technical mechanics"],
+                    "next_question": None,
+                    "next_question_topic": core_topic,
+                    "next_difficulty": "Medium",
+                    "final_report": None
+                }
+
+            # Valid technical response
             return {
                 "stage": "interview",
+                "verdict": "correct",
+                "verdict_explanation": f"Correct answer! Your explanation accurately covers the core architecture of {core_topic}.",
                 "evaluation": {
-                    "answer_quality": 84.0,
-                    "technical_knowledge": 86.0,
-                    "problem_solving": 82.0,
-                    "communication": 82.0,
-                    "depth": 80.0
+                    "answer_quality": 86.0,
+                    "technical_knowledge": 88.0,
+                    "problem_solving": 84.0,
+                    "communication": 85.0,
+                    "depth": 82.0
                 },
-                "feedback": "Solid answer with clear explanation of the core principles. Good use of technical terminology.",
-                "strengths": ["Clear technical articulation", "Accurate conceptual grasp"],
-                "weaknesses": ["Consider discussing concurrency trade-offs and edge cases"],
-                "next_question": "How would you handle fault tolerance and distributed state when scaling this component under heavy traffic?",
-                "next_question_topic": "System Reliability",
+                "feedback": f"Accurate and clear explanation of {core_topic}. Demonstrates solid engineering knowledge.",
+                "strengths": [f"Accurate understanding of {core_topic}", "Structured technical explanation"],
+                "weaknesses": ["Could expand on high-concurrency production trade-offs"],
+                "next_question": None,
+                "next_question_topic": core_topic,
                 "next_difficulty": "Medium",
                 "final_report": None
             }

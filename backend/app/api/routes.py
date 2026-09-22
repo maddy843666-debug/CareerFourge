@@ -11,6 +11,7 @@ from app.schemas.schemas import (
     AnswerRequest, AnswerEvaluationResponse, InterviewSetupRequest,
     InterviewReportResponse, InterviewWhatIfRequest, InterviewWhatIfResponse,
     CodingSubmitRequest, CodingEvaluationResponse, SQLSubmitRequest, SQLEvaluationResponse,
+    AIHintRequest, AIHintResponse,
     ReadinessBreakdownSchema, PersonalizedRoadmapResponse, ReassessmentResponse,
     RecruiterDashboardResponse, RoleRoadmapRequest, RoleRoadmapResponse, AITutorRequest, AITutorResponse,
     InterviewChatRequest, InterviewChatResponse
@@ -146,11 +147,23 @@ def simulate_what_if(payload: InterviewWhatIfRequest):
 
 @router.post("/coding/submit", response_model=CodingEvaluationResponse)
 def submit_code(payload: CodingSubmitRequest):
-    return CodingEvaluator().evaluate(payload.code)
+    return CodingEvaluator().evaluate(
+        code=payload.code,
+        problem_id=payload.problem_id or "rotated-array",
+        language=payload.language or "python"
+    )
+
+@router.post("/coding/hint", response_model=AIHintResponse)
+def get_coding_hint(payload: AIHintRequest):
+    return CodingEvaluator().get_hint(
+        problem_id=payload.problem_id,
+        code=payload.code,
+        language=payload.language or "python"
+    )
 
 @router.post("/sql/submit", response_model=SQLEvaluationResponse)
 def submit_sql(payload: SQLSubmitRequest):
-    return SQLEvaluator().evaluate(payload.query)
+    return SQLEvaluator().evaluate(payload.query, payload.problem_id)
 
 @router.get("/readiness/{profile_id}", response_model=ReadinessBreakdownSchema)
 def get_readiness_score(profile_id: int):
